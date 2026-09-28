@@ -26,6 +26,7 @@ import AssumptionsPanel from './AssumptionsPanel'
 import DecarbTab from './DecarbTab'
 import EmissionsPanel from './EmissionsPanel'
 import SidebarActions from './SidebarActions'
+import ReportDownloads from './ReportDownloads'
 
 interface Props {
   runId: string
@@ -159,6 +160,8 @@ export default function DashboardShell({ runId, onBack }: Props) {
       <KpiRow data={data} />
       <ScorsScale bands={data.scors_bands} perSqm={data.per_sqm}
                   rating={data.rating} benchmark={data.benchmark} />
+
+      <ReportDownloads runId={runId} calculatedAt={data.calculated_at} />
 
       {/* ── Tabs ────────────────────────────────────────────────────── */}
       <nav className="dash-tabs" role="tablist">

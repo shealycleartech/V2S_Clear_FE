@@ -8,7 +8,7 @@
  * refresh or a closed tab costs nothing.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ApiError,
   getGroups,
@@ -19,6 +19,7 @@ import {
   type PreviewResponse,
   type Selection,
 } from './api'
+import { SaveFailed, SavePill, useAutoSave } from './useAutoSave'
 
 interface Props {
   runId: string
@@ -52,13 +53,9 @@ export default function ChooseElementsStep({ runId, onBack, onContinue }: Props)
   const [sel, setSel] = useState<Selection>(EMPTY)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
-
-  const saveTimer = useRef<number | null>(null)
-  const firstRender = useRef(true)
 
   useEffect(() => {
     let cancelled = false
@@ -75,19 +72,10 @@ export default function ChooseElementsStep({ runId, onBack, onContinue }: Props)
   }, [runId])
 
   // Debounced save. Rapid clicking should not mean a request per click, but the
-  // user should never have to think about saving either.
-  useEffect(() => {
-    if (firstRender.current) { firstRender.current = false; return }
-    if (!data) return
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    setSaveState('saving')
-    saveTimer.current = window.setTimeout(() => {
-      saveSelection(runId, sel)
-        .then(() => setSaveState('saved'))
-        .catch(() => setSaveState('idle'))
-    }, 500)
-    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }
-  }, [sel, runId, data])
+  // user should never have to think about saving either - and leaving the step
+  // sends a pending save rather than dropping it (see useAutoSave).
+  const { saveState, leaving, leaveWith, retry } = useAutoSave(
+    sel, (v, o) => saveSelection(runId, v, o), data !== null)
 
   const excCats = useMemo(() => new Set(sel.excluded_categories), [sel])
   const excLevels = useMemo(() => new Set(sel.excluded_levels), [sel])
@@ -217,10 +205,7 @@ export default function ChooseElementsStep({ runId, onBack, onContinue }: Props)
       <section className="panel">
         <div className="panel-head">
           <h2>What&rsquo;s included</h2>
-          <span className={`save-pill save-${saveState}`}>
-            {saveState === 'saving' ? 'Saving…'
-              : saveState === 'saved' ? 'Saved' : ''}
-          </span>
+          <SavePill state={saveState} onRetry={retry} />
         </div>
         <div className="stats">
           <Stat label="Included rows" value={stats.included.toLocaleString()} />
@@ -423,11 +408,14 @@ export default function ChooseElementsStep({ runId, onBack, onContinue }: Props)
         </div>
       )}
 
+      <SaveFailed state={saveState} onRetry={retry} />
+
       <footer className="step-foot">
-        <button type="button" className="ghost" onClick={onBack}>← Back</button>
-        <button type="button" className="primary" disabled={nothingLeft}
-                onClick={onContinue}>
-          Continue to Materials →
+        <button type="button" className="ghost" disabled={leaving}
+                onClick={leaveWith(onBack)}>← Back</button>
+        <button type="button" className="primary" disabled={nothingLeft || leaving}
+                onClick={leaveWith(onContinue)}>
+          {leaving ? 'Saving…' : 'Continue to Materials →'}
         </button>
       </footer>
     </div>

@@ -28,6 +28,7 @@ import {
   type MaterialRow,
   type MaterialsState,
 } from './api'
+import { SaveFailed, SavePill, useAutoSave } from './useAutoSave'
 
 interface Props {
   runId: string
@@ -64,7 +65,6 @@ export default function MaterialsStep({ runId, onBack, onContinue }: Props) {
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
   const [pickedCats, setPickedCats] = useState<Set<string>>(new Set())
   const [bulk, setBulk] = useState({ grade: '', ggbs: '', rebar: '', pt: '', steel: '' })
   const [bulkMsg, setBulkMsg] = useState<{ tone: 'ok' | 'warn'; text: string } | null>(null)
@@ -73,7 +73,6 @@ export default function MaterialsStep({ runId, onBack, onContinue }: Props) {
   const [epdSrc, setEpdSrc] = useState('')
   const [epdMsg, setEpdMsg] = useState<{ tone: 'ok' | 'warn' | 'bad'; text: string } | null>(null)
 
-  const saveTimer = useRef<number | null>(null)
   const dirty = useRef(false)
 
   useEffect(() => {
@@ -96,17 +95,9 @@ export default function MaterialsStep({ runId, onBack, onContinue }: Props) {
     return () => { cancelled = true }
   }, [runId])
 
-  useEffect(() => {
-    if (!dirty.current) return
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    setSaveState('saving')
-    saveTimer.current = window.setTimeout(() => {
-      saveMaterials(runId, state)
-        .then(() => setSaveState('saved'))
-        .catch(() => setSaveState('idle'))
-    }, 500)
-    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }
-  }, [state, runId])
+  // Saves only after a real edit - loading the step is not a change.
+  const { saveState, leaving, leaveWith, retry } = useAutoSave(
+    state, (v, o) => saveMaterials(runId, v, o), dirty.current)
 
   const factorById = useMemo(() => {
     const m = new Map<string, { name: string; group: string; inc_reinf: boolean }>()
@@ -359,9 +350,7 @@ export default function MaterialsStep({ runId, onBack, onContinue }: Props) {
       <section className="panel">
         <div className="panel-head">
           <h2>Defaults for every element</h2>
-          <span className={`save-pill save-${saveState}`}>
-            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : ''}
-          </span>
+          <SavePill state={saveState} onRetry={retry} />
         </div>
         <div className="grid">
           <label className="field">
@@ -669,10 +658,15 @@ export default function MaterialsStep({ runId, onBack, onContinue }: Props) {
         )}
       </section>
 
+      <SaveFailed state={saveState} onRetry={retry} />
+
       <footer className="step-foot">
-        <button type="button" className="ghost" onClick={onBack}>← Back</button>
-        <button type="button" className="primary" disabled={rows.length === 0}
-                onClick={onContinue}>Continue to Transport &amp; Waste →</button>
+        <button type="button" className="ghost" disabled={leaving}
+                onClick={leaveWith(onBack)}>← Back</button>
+        <button type="button" className="primary" disabled={rows.length === 0 || leaving}
+                onClick={leaveWith(onContinue)}>
+          {leaving ? 'Saving…' : <>Continue to Transport &amp; Waste →</>}
+        </button>
       </footer>
     </div>
   )

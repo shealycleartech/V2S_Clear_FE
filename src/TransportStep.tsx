@@ -27,6 +27,7 @@ import {
   type CatalogueResponse,
   type TransportState,
 } from './api'
+import { SaveFailed, SavePill, useAutoSave } from './useAutoSave'
 
 interface Props {
   runId: string
@@ -51,9 +52,7 @@ export default function TransportStep({ runId, area, onBack, onContinue }: Props
   const [a5aText, setA5aText] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
 
-  const saveTimer = useRef<number | null>(null)
   const dirty = useRef(false)
 
   useEffect(() => {
@@ -84,17 +83,9 @@ export default function TransportStep({ runId, area, onBack, onContinue }: Props
     return Number.isFinite(v) && v >= cat.a5a.min && v <= cat.a5a.max
   }, [a5aText, cat])
 
-  useEffect(() => {
-    if (!dirty.current || !a5aValid) return
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    setSaveState('saving')
-    saveTimer.current = window.setTimeout(() => {
-      saveTransport(runId, state)
-        .then(() => setSaveState('saved'))
-        .catch(() => setSaveState('idle'))
-    }, 500)
-    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }
-  }, [state, runId, a5aValid])
+  // Saves only after a real edit, and never an out-of-range A5a.
+  const { saveState, leaving, leaveWith, retry } = useAutoSave(
+    state, (v, o) => saveTransport(runId, v, o), dirty.current && a5aValid)
 
   function setLeg(key: string, leg: 'sea' | 'road', value: string) {
     dirty.current = true
@@ -182,9 +173,7 @@ export default function TransportStep({ runId, area, onBack, onContinue }: Props
       <section className="panel">
         <div className="panel-head">
           <h2>Delivery distances (A4)</h2>
-          <span className={`save-pill save-${saveState}`}>
-            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : ''}
-          </span>
+          <SavePill state={saveState} onRetry={retry} />
         </div>
         <p className="hint">
           One-way kilometres. The return leg for road is added automatically —
@@ -323,10 +312,15 @@ export default function TransportStep({ runId, area, onBack, onContinue }: Props
         </div>
       </section>
 
+      <SaveFailed state={saveState} onRetry={retry} />
+
       <footer className="step-foot">
-        <button type="button" className="ghost" onClick={onBack}>← Back</button>
-        <button type="button" className="primary" disabled={!a5aValid}
-                onClick={onContinue}>Continue to Data Check →</button>
+        <button type="button" className="ghost" disabled={leaving}
+                onClick={leaveWith(onBack)}>← Back</button>
+        <button type="button" className="primary" disabled={!a5aValid || leaving}
+                onClick={leaveWith(onContinue)}>
+          {leaving ? 'Saving…' : 'Continue to Data Check →'}
+        </button>
       </footer>
     </div>
   )

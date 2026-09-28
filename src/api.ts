@@ -154,6 +154,21 @@ export function lastRun(): string | null {
   }
 }
 
+/** How a step save is sent. `keepalive` lets the request finish after the page
+ *  has gone - used for the last save on refresh or tab close. */
+export interface SaveOptions {
+  keepalive?: boolean
+}
+
+/** Settles once every step save registered so far has finished. */
+let pendingSaves: Promise<unknown> = Promise.resolve()
+
+/** Make reads wait for this save. Called by useAutoSave the moment a save is
+ *  queued, so a read issued straight afterwards cannot overtake it. */
+export function trackSave(save: Promise<unknown>): void {
+  pendingSaves = Promise.allSettled([pendingSaves, save])
+}
+
 /**
  * Every call goes through here.
  *
@@ -163,6 +178,11 @@ export function lastRun(): string | null {
  * like data loss rather than a missing header.
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // A read waits for any step save still in flight. Leaving a step sends its
+  // last edit as the next step mounts and loads, and without this the load can
+  // overtake the save and show the value from before the edit.
+  if (!init.method || init.method === 'GET') await pendingSaves
+
   const headers = new Headers(init.headers)
   headers.set('X-Client-Id', clientId())
   // FormData sets its own multipart boundary; setting Content-Type breaks it.
@@ -170,7 +190,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
-  const res = await fetch(API_BASE + path, { ...init, headers })
+  // Browsers refuse a keepalive request whose body is over 64 KB. Past that,
+  // send it normally - it may not survive the page closing, but it is sent.
+  const keepalive = !!init.keepalive && typeof init.body === 'string'
+    && init.body.length < 60_000
+  const res = await fetch(API_BASE + path, { ...init, headers, keepalive })
   if (!res.ok) return parseError(res)
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
@@ -336,8 +360,10 @@ export async function getGroups(runId: string): Promise<GroupsResponse> {
 export async function saveSelection(
   runId: string,
   selection: Selection,
+  opts: SaveOptions = {},
 ): Promise<void> {
-  await request(`/api/runs/${runId}/selection`, { method: 'PUT', body: JSON.stringify(selection) })
+  await request(`/api/runs/${runId}/selection`,
+    { method: 'PUT', body: JSON.stringify(selection), keepalive: opts.keepalive })
 }
 
 export async function getPreview(runId: string): Promise<PreviewResponse> {
@@ -452,8 +478,10 @@ export async function getMaterials(runId: string): Promise<MaterialsResponse> {
 export async function saveMaterials(
   runId: string,
   materials: MaterialsState,
+  opts: SaveOptions = {},
 ): Promise<void> {
-  await request(`/api/runs/${runId}/materials`, { method: 'PUT', body: JSON.stringify(materials) })
+  await request(`/api/runs/${runId}/materials`,
+    { method: 'PUT', body: JSON.stringify(materials), keepalive: opts.keepalive })
 }
 
 /* ── Step 4: Transport & Waste ──────────────────────────────────────────── */
@@ -491,8 +519,10 @@ export async function getTransport(runId: string): Promise<TransportResponse> {
 export async function saveTransport(
   runId: string,
   transport: TransportState,
+  opts: SaveOptions = {},
 ): Promise<void> {
-  await request(`/api/runs/${runId}/transport`, { method: 'PUT', body: JSON.stringify(transport) })
+  await request(`/api/runs/${runId}/transport`,
+    { method: 'PUT', body: JSON.stringify(transport), keepalive: opts.keepalive })
 }
 
 /* ── Step 5: Data Check (read-only) ─────────────────────────────────────── */
@@ -730,7 +760,8 @@ export interface DashboardResponse {
   rebar_rates_used: { element: string; rate_kg_m3: number }[]
   reports: {
     files: Record<string, { kind: string; label: string; ext: string
-                            filename: string; size: number }>
+                            filename: string; size: number
+                            generated_at?: string }>
     status: string
     error: string | null
   }
@@ -829,9 +860,42 @@ export async function requestReports(
 }
 
 export async function getReports(runId: string): Promise<
-  DashboardResponse['reports'] & { available: { kind: string; label: string }[] }
+  DashboardResponse['reports'] & {
+    available: { kind: string; label: string }[]
+    /** The kinds the current (or last) generation was asked for. */
+    requested?: string[]
+  }
 > {
   return request(`/api/runs/${runId}/reports`)
+}
+
+/**
+ * Fetch a generated report and hand it to the browser as a file download.
+ *
+ * Not a plain <a href>: a link cannot send X-Client-Id, and runs are owned, so
+ * the server would answer 404. The filename comes from the manifest because a
+ * cross-origin response does not expose Content-Disposition to the page.
+ */
+export async function downloadReport(
+  runId: string, kind: string, filename: string,
+): Promise<void> {
+  await pendingSaves
+  const res = await fetch(`${API_BASE}/api/runs/${runId}/reports/${kind}/download`,
+    { headers: { 'X-Client-Id': clientId() } })
+  if (!res.ok) return parseError(res)
+  const url = URL.createObjectURL(await res.blob())
+  try {
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } finally {
+    // Revoked later, not now: revoking straight away can cancel the download in
+    // some browsers before they have started reading the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  }
 }
 
 
